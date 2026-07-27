@@ -314,6 +314,17 @@ impl AsyncConnection {
         }))))
     }
 
+    /// SGX enclaves have no resolver of their own; the enclave runner resolves
+    /// on our behalf, but only if we hand it the hostname as a string.
+    #[cfg(target_env = "sgx")]
+    async fn tcp_connect(host: &str, port: u16) -> Result<AsyncTcpStream, Error> {
+        #[cfg(feature = "log")]
+        log::trace!("Connecting to {host}:{port}");
+
+        AsyncTcpStream::connect(format!("{host}:{port}")).await.map_err(Error::IoError)
+    }
+
+    #[cfg(not(target_env = "sgx"))]
     async fn tcp_connect(host: &str, port: u16) -> Result<AsyncTcpStream, Error> {
         #[cfg(feature = "log")]
         log::trace!("Looking up host {host}");
