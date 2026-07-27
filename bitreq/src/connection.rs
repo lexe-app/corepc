@@ -2,7 +2,9 @@ use core::time::Duration;
 #[cfg(feature = "async")]
 use std::future::Future;
 use std::io::{self, Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::TcpStream;
+#[cfg(not(target_env = "sgx"))]
+use std::net::ToSocketAddrs;
 #[cfg(feature = "async")]
 use std::pin::Pin;
 #[cfg(feature = "async")]
@@ -322,6 +324,17 @@ impl AsyncConnection {
         }))))
     }
 
+    /// SGX enclaves have no resolver of their own; the enclave runner resolves
+    /// on our behalf, but only if we hand it the hostname as a string.
+    #[cfg(target_env = "sgx")]
+    async fn tcp_connect(host: &str, port: u16) -> Result<AsyncTcpStream, Error> {
+        #[cfg(feature = "log")]
+        log::trace!("Connecting to {host}:{port}");
+
+        AsyncTcpStream::connect(format!("{host}:{port}")).await.map_err(Error::IoError)
+    }
+
+    #[cfg(not(target_env = "sgx"))]
     async fn tcp_connect(host: &str, port: u16) -> Result<AsyncTcpStream, Error> {
         #[cfg(feature = "log")]
         log::trace!("Looking up host {host}");
@@ -703,6 +716,20 @@ impl Connection {
         Ok(Connection { stream })
     }
 
+    /// SGX enclaves have no resolver of their own; the enclave runner resolves
+    /// on our behalf, but only if we hand it the hostname as a string. SGX's
+    /// `TcpStream::connect_timeout` ignores the timeout, so we only check that
+    /// the deadline hasn't already passed.
+    #[cfg(target_env = "sgx")]
+    fn tcp_connect(host: &str, port: u16, timeout_at: Option<Instant>) -> Result<TcpStream, Error> {
+        #[cfg(feature = "log")]
+        log::trace!("Connecting to {host}:{port}");
+
+        timeout_at_to_duration(timeout_at).map_err(Error::IoError)?;
+        TcpStream::connect(format!("{host}:{port}")).map_err(Error::IoError)
+    }
+
+    #[cfg(not(target_env = "sgx"))]
     fn tcp_connect(host: &str, port: u16, timeout_at: Option<Instant>) -> Result<TcpStream, Error> {
         #[cfg(feature = "log")]
         log::trace!("Looking up host {host}");
