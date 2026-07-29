@@ -13,6 +13,5 @@ FEATURES_WITHOUT_STD=""
 # Run these examples.
 EXAMPLES=""
 
-# Just check the latest minor version of the last three supported Core versions.
-# This is mainly for docs and MSRV - integration tests will catch any other errors.
-EXACT_FEATURES=("bitcoind_30_2,elects_0_10_6" "29_0_2,elects_0_10_6" "28_2,elects_0_10_6")
+# Only the pinned electrs and Bitcoin Core versions are supported.
+EXACT_FEATURES=("download")
