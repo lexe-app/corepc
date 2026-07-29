@@ -1,0 +1,126 @@
+name: Build blockstream-electrs release binaries
+
+on:
+  workflow_dispatch:
+
+env:
+  RELEASE_TAG: electrs_releases
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.system }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            system: x86_64-linux
+            artifact_os: linux
+          - runner: macos-latest
+            system: aarch64-darwin
+            artifact_os: macos
+
+    steps:
+      - name: Check out corepc
+        uses: actions/checkout@v7
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31.11.3
+
+      # On macOS the Nix installer starts nix-daemon but doesn't wait for its
+      # socket. Without the socket, `nix-build` falls back to opening the store
+      # directly and fails with "opening lock file .../big-lock: Permission
+      # denied".
+      - name: Wait for nix-daemon
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          for _ in $(seq 60); do
+            if [[ -S /nix/var/nix/daemon-socket/socket ]]; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::nix-daemon socket did not appear within 60s"
+          sudo launchctl print system/org.nixos.nix-daemon || true
+          sudo cat /var/log/nix-daemon.log || true
+          exit 1
+
+      - name: Build blockstream-electrs
+        run: nix-build electrsd/default.nix -A blockstream-electrs --out-link result
+
+      # The zip and its `electrsd/sha256` entry are built by Nix, so they only
+      # depend on the binary, not on this runner's zip tool or timezone.
+      - name: Build release zip
+        run: nix-build electrsd/default.nix -A blockstream-electrs-zip --out-link result-zip
+
+      - name: Verify binary architecture
+        shell: bash
+        run: |
+          file result/bin/electrs
+          if [[ "${{ matrix.system }}" == "x86_64-linux" ]]; then
+            file result/bin/electrs \
+              | grep --extended-regexp --quiet 'x86-64.*(statically|static-pie) linked'
+          else
+            file result/bin/electrs | grep --quiet 'Mach-O 64-bit executable arm64'
+          fi
+          result/bin/electrs --version
+
+      - name: Copy release zip out of the Nix store
+        run: |
+          cat result-zip/sha256
+          cp result-zip/electrs_*.zip .
+
+      - name: Upload release zip
+        uses: actions/upload-artifact@v7
+        with:
+          name: electrs_${{ matrix.artifact_os }}
+          path: electrs_*.zip
+          if-no-files-found: error
+          compression-level: 0
+
+  release:
+    name: Upload to GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download binaries
+        uses: actions/download-artifact@v8
+        with:
+          pattern: electrs_*
+          merge-multiple: true
+
+      # Asset names include a prefix of their SHA-256, so an existing asset with
+      # the same name has the same contents and is skipped, never replaced.
+      - name: Upload release assets
+        shell: bash
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "electrsd/sha256 entries:"
+            echo
+            sha256sum electrs_*.zip | sed 's/^/    /'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          if ! gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" \
+              --title "$RELEASE_TAG" \
+              --notes "Pre-built Blockstream electrs binaries downloaded by electrsd." \
+              --target "$GITHUB_SHA"
+          fi
+          existing="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name')"
+          for asset in electrs_*.zip; do
+            if grep --fixed-strings --line-regexp --quiet "$asset" <<< "$existing"; then
+              echo "$asset is already uploaded"
+            else
+              gh release upload "$RELEASE_TAG" "$asset"
+            fi
+          done
