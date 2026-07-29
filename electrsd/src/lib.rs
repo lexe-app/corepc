@@ -1,11 +1,10 @@
 //! Electrsd
 //!
-//! Utility to run a regtest electrsd process, useful in integration testing environment
+//! Test harness for running Blockstream electrs with a Bitcoin Core regtest node.
 //!
 
 mod error;
 mod ext;
-mod versions;
 
 pub extern crate bitcoind;
 pub extern crate corepc_regtest_client;
@@ -13,7 +12,6 @@ pub extern crate electrum_client;
 
 use std::env;
 use std::ffi::OsStr;
-use std::net::TcpStream;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
@@ -27,8 +25,6 @@ use log::{debug, error, warn};
 
 #[rustfmt::skip] // Keep public re-exports separate.
 pub use error::Error;
-
-const IS_ALL_FEATURES_BUILD: bool = cfg!(feature = "all_features");
 
 /// Electrs configuration parameters, implements a convenient [Default] for most common use.
 ///
@@ -45,8 +41,13 @@ const IS_ALL_FEATURES_BUILD: bool = cfg!(feature = "all_features");
 #[derive(Debug, PartialEq, Eq, Clone)]
 #[non_exhaustive]
 pub struct Conf<'a> {
-    /// Electrsd command line arguments
-    /// note that `db-dir`, `cookie`, `cookie-file`, `daemon-rpc-addr`, `jsonrpc-import`, `electrum-rpc-addr`, `monitoring-addr`, `http-addr`  cannot be used cause they are automatically initialized.
+    /// Electrsd command line arguments.
+    ///
+    /// Defaults are tuned to minimize resource use on small regtest chains.
+    /// Replace this vector to opt out of those defaults. Note that `db-dir`,
+    /// `network`, `cookie`, `daemon-rpc-addr`, `jsonrpc-import`,
+    /// `electrum-rpc-addr`, `monitoring-addr`, and `http-addr` cannot be used
+    /// because they are initialized automatically.
     pub args: Vec<&'a str>,
 
     /// if `true` electrsd log output will not be suppressed
@@ -83,17 +84,17 @@ pub struct Conf<'a> {
 
 impl Default for Conf<'_> {
     fn default() -> Self {
-        #[allow(unused_mut)]
-        let mut args = vec![];
-
-        let should_version_use_verbose_flag =
-            cfg!(any(feature = "electrs_0_9_1", feature = "electrs_0_8_10", feature = "legacy"));
-        if !IS_ALL_FEATURES_BUILD && should_version_use_verbose_flag {
-            args.push("-vvv");
-        }
-
         Conf {
-            args,
+            args: vec![
+                "--lightmode",
+                "--daemon-parallelism=1",
+                "--initial-sync-batch-size=1",
+                "--db-parallelism=1",
+                "--db-block-cache-mb=1",
+                "--db-write-buffer-size-mb=1",
+                "--cache-index-filter-blocks",
+                "-vvv",
+            ],
             view_stderr: false,
             http_enabled: false,
             network: "regtest",
@@ -179,36 +180,16 @@ impl ElectrsD {
         args.push("--network");
         args.push(conf.network);
 
-        let cookie_flag;
-        let cookie_val = if !IS_ALL_FEATURES_BUILD && cfg!(feature = "legacy") {
-            cookie_flag = "--cookie";
-            std::fs::read_to_string(&bitcoind.params.cookie_file)?
-        } else {
-            cookie_flag = "--cookie-file";
-            bitcoind.params.cookie_file.display().to_string()
-        };
-        args.push(cookie_flag);
-        args.push(&cookie_val);
+        // Blockstream electrs only accepts the cookie value, not a cookie file.
+        args.push("--cookie");
+        let cookie = std::fs::read_to_string(&bitcoind.params.cookie_file)?;
+        args.push(&cookie);
 
         args.push("--daemon-rpc-addr");
         let rpc_socket = bitcoind.params.rpc_socket.to_string();
         args.push(&rpc_socket);
 
-        let p2p_socket;
-
-        let should_version_use_jsonrpc_import =
-            cfg!(any(feature = "electrs_0_8_10", feature = "esplora_a33e97e1", feature = "legacy"));
-        if !IS_ALL_FEATURES_BUILD && should_version_use_jsonrpc_import {
-            args.push("--jsonrpc-import");
-        } else {
-            args.push("--daemon-p2p-addr");
-            p2p_socket = bitcoind
-                .params
-                .p2p_socket
-                .expect("electrs needs bitcoind with p2p port open")
-                .to_string();
-            args.push(&p2p_socket);
-        }
+        args.push("--jsonrpc-import");
 
         let electrum_url = format!("0.0.0.0:{}", get_available_port()?);
         args.push("--electrum-rpc-addr");
@@ -252,20 +233,7 @@ impl ElectrsD {
                     return Err(Error::EarlyExit(status).into());
                 }
             }
-            let client_result = if !IS_ALL_FEATURES_BUILD
-                && cfg!(any(
-                    feature = "electrs_0_8_10",
-                    feature = "electrs_0_9_1",
-                    feature = "electrs_0_9_11"
-                )) {
-                // Old electrs servers do not handle v0.25 protocol negotiation reliably.
-                // Build RawClient directly from a plaintext stream to preserve previous behavior.
-                TcpStream::connect(&electrum_url).map(RawClient::from).map_err(Into::into)
-            } else {
-                RawClient::new(&electrum_url, Some(Duration::from_secs(3)), None)
-            };
-
-            match client_result {
+            match RawClient::new(&electrum_url, Some(Duration::from_secs(3)), None) {
                 Ok(client) => break client,
                 Err(_) => std::thread::sleep(Duration::from_millis(500)),
             }
@@ -317,19 +285,20 @@ impl Drop for ElectrsD {
     fn drop(&mut self) { let _ = self.kill(); }
 }
 
-/// Provide the electrs executable path if a version feature has been specified and `ELECTRSD_SKIP_DOWNLOAD` is not set.
+/// Provide the downloaded electrs executable path when the `download` feature
+/// is enabled and `ELECTRSD_SKIP_DOWNLOAD` is not set.
 pub fn downloaded_exe_path() -> Option<String> {
-    if std::env::var_os("ELECTRSD_SKIP_DOWNLOAD").is_none() {
-        Some(format!("{}/electrs/{}/electrs", env!("OUT_DIR"), versions::electrs_name(),))
-    } else {
-        None
+    if std::env::var_os("ELECTRSD_SKIP_DOWNLOAD").is_some() {
+        return None;
     }
+    // Only set by `build.rs` when it downloaded electrs.
+    option_env!("ELECTRSD_DOWNLOADED_EXE_PATH").map(str::to_owned)
 }
 
 /// Returns the daemon `electrs` executable with the following precedence:
 ///
 /// 1) If it's specified in the `ELECTRS_EXEC` or in `ELECTRS_EXE` env var (errors if both env vars are present)
-/// 2) If there is no env var but an auto-download feature such as `electrs_0_9_11` is enabled, returns the path of the downloaded executabled when that file exists
+/// 2) If there is no env var but `download` is enabled, returns the path of the downloaded executable when that file exists
 /// 3) If neither of the precedent are available, the `electrs` executable is searched in the `PATH`
 pub fn exe_path() -> anyhow::Result<String> {
     if let (Ok(_), Ok(_)) = (std::env::var("ELECTRS_EXEC"), std::env::var("ELECTRS_EXE")) {
@@ -391,11 +360,10 @@ pub fn exe_path() -> anyhow::Result<String> {
 mod test {
     use std::env;
 
-    use bitcoind::P2P;
     use electrum_client::ElectrumApi;
     use log::{debug, log_enabled, Level};
 
-    use crate::{exe_path, ElectrsD, IS_ALL_FEATURES_BUILD};
+    use crate::{exe_path, ElectrsD};
 
     #[test]
     #[ignore] // launch singularly since env are globals
@@ -449,11 +417,6 @@ mod test {
         debug!("electrs: {}", &electrs_exe);
         let mut conf = bitcoind::Conf::default();
         conf.view_stdout = log_enabled!(Level::Debug);
-        let should_version_use_p2p =
-            !cfg!(any(feature = "electrs_0_8_10", feature = "esplora_a33e97e1"));
-        if IS_ALL_FEATURES_BUILD || should_version_use_p2p {
-            conf.p2p = P2P::Yes;
-        }
         let bitcoind = bitcoind::BitcoinD::with_conf(&bitcoind_exe, &conf).unwrap();
         let electrs_conf =
             crate::Conf { view_stderr: log_enabled!(Level::Debug), ..Default::default() };

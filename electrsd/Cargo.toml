@@ -2,7 +2,7 @@
 name = "electrsd"
 version = "0.43.2"
 authors = ["Riccardo Casatta <riccardo@casatta.it>"]
-description = "Utility to run a regtest electrs process, useful in integration testing environment"
+description = "Test harness for running Blockstream electrs with a Bitcoin Core regtest node"
 repository = "https://git.rust-bitcoin.org/rust-bitcoin/corepc"
 license = "MIT"
 edition = "2021"
@@ -11,7 +11,7 @@ categories = ["cryptography::cryptocurrencies", "development-tools::testing"]
 exclude = ["tests", "contrib"]
 
 [dependencies]
-bitcoind = { version = "0.43.0", path = "../bitcoind" }
+bitcoind = { version = "0.43.0", path = "../bitcoind", default-features = false, features = ["32_1"] }
 corepc-regtest-client = { version = "0.18.0", path = "../regtest-client" }
 electrum-client = { version = "0.25.0", default-features = false }
 log = { version = "0.4" }
@@ -28,46 +28,13 @@ bitcoin_hashes = { version = "0.14", optional = true }
 bitreq = { version = "0.4.3", path = "../bitreq", optional = true, features = ["https"] }
 
 [features]
-default = ["electrs_0_10_6"]
-
-legacy = []
-
-# download is not supposed to be used directly only through selecting one of the version feature
-download = ["anyhow", "bitcoin_hashes", "bitreq"]
-
-esplora_a33e97e1 = ["download", "legacy"]
-electrs_0_8_10 = ["download"]
-electrs_0_9_1 = ["download"]
-electrs_0_9_11 = ["download"]
-electrs_0_10_6 = ["download"]
-
-bitcoind_download = ["bitcoind/download", "download"]
-
-bitcoind_30_2 = ["bitcoind/30_2"]
-bitcoind_29_0 = ["bitcoind/29_0"]
-bitcoind_28_2 = ["bitcoind/28_2"]
-bitcoind_27_2 = ["bitcoind/27_2"]
-bitcoind_26_2 = ["bitcoind/26_2"]
-bitcoind_25_2 = ["bitcoind/25_2"]
-bitcoind_24_2 = ["bitcoind/24_2"]
-bitcoind_23_2 = ["bitcoind/23_2"]
-bitcoind_22_1 = ["bitcoind/22_1"]
-bitcoind_0_21_2 = ["bitcoind/0_21_2"]
-bitcoind_0_20_2 = ["bitcoind/0_20_2"]
-bitcoind_0_19_1 = ["bitcoind/0_19_1"]
-bitcoind_0_18_1 = ["bitcoind/0_18_1"]
-bitcoind_0_17_2 = ["bitcoind/0_17_2"]
-
-# This flag should never be manually set. Used to handle `--all-features` was used.
-all_features = []
+# Download the pinned Blockstream electrs and Bitcoin Core binaries at build time.
+download = ["anyhow", "bitcoin_hashes", "bitreq", "bitcoind/download"]
 
 [package.metadata.docs.rs]
-features = ["electrs_0_10_6"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [package.metadata.rbmt.lint]
-# The electrsd crate requires a version feature to compile
-features = ["electrs_0_10_6"]
 # Duplicates from build-dep/dep splits, --target=all, or upstream version conflicts.
 allowed_duplicates = [
     "anyhow",           # build-dep and regular dep, same version
