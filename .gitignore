@@ -1,7 +1,12 @@
 # gitignore for rust-bitcoin-core-json-rpc
 
+/.git-blame-ignore-revs
 Cargo.lock
 **/target
+
+# Nix build outputs
+result
+result-*
 
 # Copied from electsd repo during import.
 .idea/
