@@ -20,31 +20,57 @@ mod download {
     include!("src/versions.rs");
 
     const GITHUB_URL: &str =
-        "https://github.com/RCasatta/electrsd/releases/download/electrs_releases";
+        "https://github.com/lexe-app/corepc/releases/download/electrs_releases";
 
-    fn get_expected_sha256(filename: &str) -> anyhow::Result<sha256::Hash> {
+    /// Returns the pinned release asset filename and SHA-256 for this OS.
+    ///
+    /// Asset names end with the first 16 hex chars of their SHA-256, so a new
+    /// build never reuses an old asset name or local download path.
+    fn pinned_asset() -> anyhow::Result<(String, sha256::Hash)> {
+        let prefix = format!("{}_", electrs_name());
         let file = File::open("sha256")?;
-        for line in BufReader::new(file).lines().map_while(Result::ok) {
-            let tokens: Vec<_> = line.split("  ").collect();
-            if tokens.len() == 2 && filename == tokens[1] {
-                return Ok(sha256::Hash::from_str(tokens[0]).unwrap());
-            }
-        }
-        panic!("no sha256 entry for {} in electrsd/sha256", filename);
+        let entries: Vec<_> = BufReader::new(file)
+            .lines()
+            .map_while(Result::ok)
+            .filter_map(|line| {
+                let (hash, filename) = line.split_once("  ")?;
+                filename.starts_with(&prefix).then(|| (hash.to_owned(), filename.to_owned()))
+            })
+            .collect();
+        anyhow::ensure!(
+            entries.len() == 1,
+            "expected exactly one {}<hash>.zip entry in electrsd/sha256, found {}",
+            prefix,
+            entries.len()
+        );
+        let (hex, filename) = entries.into_iter().next().unwrap();
+        let hash = sha256::Hash::from_str(&hex)
+            .with_context(|| format!("invalid SHA-256 for {} in electrsd/sha256", filename))?;
+        let expected_filename = format!("{}{}.zip", prefix, &hex[..16]);
+        anyhow::ensure!(
+            filename == expected_filename,
+            "electrsd/sha256 entry {} should be named {}",
+            filename,
+            expected_filename
+        );
+        Ok((filename, hash))
     }
 
     pub(crate) fn start() -> anyhow::Result<()> {
+        println!("cargo:rerun-if-changed=sha256");
+        println!("cargo:rerun-if-changed=src/versions.rs");
+        println!("cargo:rerun-if-env-changed=ELECTRSD_SKIP_DOWNLOAD");
+        println!("cargo:rerun-if-env-changed=ELECTRSD_DOWNLOAD_ENDPOINT");
         if std::env::var_os("ELECTRSD_SKIP_DOWNLOAD").is_some() {
             return Ok(());
         }
 
-        let download_filename_without_extension = electrs_name();
-        let download_filename = format!("{}.zip", download_filename_without_extension);
-        let expected_hash = get_expected_sha256(&download_filename)?;
+        let (download_filename, expected_hash) = pinned_asset()?;
+        let download_filename_without_extension = download_filename.trim_end_matches(".zip");
         let out_dir = std::env::var_os("OUT_DIR").unwrap();
         let electrs_exe_home = Path::new(&out_dir).join("electrs");
         let destination_filename =
-            electrs_exe_home.join(&download_filename_without_extension).join("electrs");
+            electrs_exe_home.join(download_filename_without_extension).join("electrs");
 
         if !destination_filename.exists() {
             println!("filename:{} version:{} hash:{}", download_filename, VERSION, expected_hash);
@@ -53,7 +79,14 @@ mod download {
                 std::env::var("ELECTRSD_DOWNLOAD_ENDPOINT").unwrap_or(GITHUB_URL.to_string());
             let url = format!("{}/{}", download_endpoint, download_filename);
 
-            let downloaded_bytes = bitreq::get(url.clone()).send()?.into_bytes();
+            let response = bitreq::get(url.clone()).send()?;
+            anyhow::ensure!(
+                response.status_code == 200,
+                "{} returned HTTP {}",
+                url,
+                response.status_code
+            );
+            let downloaded_bytes = response.into_bytes();
 
             let downloaded_hash = sha256::Hash::hash(&downloaded_bytes);
             assert_eq!(expected_hash, downloaded_hash, "expected hash of {} is not matching", url);
@@ -80,6 +113,9 @@ mod download {
             )?;
             std::fs::remove_file(&archive_path)?;
         }
+
+        // `lib.rs` reads this in `downloaded_exe_path`.
+        println!("cargo:rustc-env=ELECTRSD_DOWNLOADED_EXE_PATH={}", destination_filename.display());
         Ok(())
     }
 }

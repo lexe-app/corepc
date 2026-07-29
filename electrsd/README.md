@@ -1,48 +1,40 @@
-[![MIT license](https://img.shields.io/github/license/RCasatta/electrsd)](https://github.com/RCasatta/electrsd/blob/master/LICENSE)
-[![Crates](https://img.shields.io/crates/v/electrsd.svg)](https://crates.io/crates/electrsd)
+[![MIT license](https://img.shields.io/github/license/lexe-app/corepc)](https://github.com/lexe-app/corepc/blob/master/electrsd/LICENSE)
 
 # Electrsd
 
-Utility to run a regtest [electrs](https://crates.io/crates/electrs) process connected to a given [bitcoind](https://crates.io/crates/bitcoind) instance,
-useful in integration testing environment.
+Utility to run a regtest [Blockstream electrs](https://github.com/Blockstream/electrs)
+process connected to a [bitcoind](https://crates.io/crates/bitcoind) instance,
+useful in integration tests.
 
 ```rust
-let bitcoind = bitcoind::BitcoinD::new("/usr/local/bin/bitcoind").unwrap();
+let bitcoind = electrsd::bitcoind::BitcoinD::new("/usr/local/bin/bitcoind").unwrap();
 let electrsd = electrsd::ElectrsD::new("/usr/local/bin/electrs", &bitcoind).unwrap();
 let header = electrsd.client.block_headers_subscribe().unwrap();
-assert_eq!(header.height, 0);
+assert_eq!(header.height, 1);
 ```
 
-## Automatic binaries download
+## Automatic binary downloads
 
-Automatic downloads require `unzip` in `PATH` to extract the downloaded binary.
+Enable the single `download` feature to use the pinned electrs and Bitcoin Core
+versions supported by this crate. Automatic downloads require `unzip` in `PATH`
+to extract the downloaded electrs binary.
 
-In your project Cargo.toml, activate the following features
-
-```yml
-electrsd = { version= "0.23", features = ["bitcoind_30_2", "bitcoin_download", "electrs_0_9_1"] }
+```toml
+electrsd = { git = "https://github.com/lexe-app/corepc", branch = "<lexe fork branch>", features = ["download"] }
 ```
 
 Then use it:
 
 ```rust
-use bitcoind::P2P;
-use electrsd::electrum_client::ElectrumApi;
-
-fn main() {
-    let bitcoind_exe = bitcoind::downloaded_exe_path().expect("bitcoind version feature must be enabled");
-    let mut conf = bitcoind::Conf::default();
-    conf.p2p = P2P::Yes;
-    let bitcoind = bitcoind::BitcoinD::with_conf(&bitcoind_exe, &conf).unwrap();
-    let electrs_exe = electrsd::downloaded_exe_path().expect("electrs version feature must be enabled");
-    let electrsd = electrsd::ElectrsD::new(&electrs_exe, &bitcoind).unwrap();
-    let header = electrsd.client.block_headers_subscribe().unwrap();
-    assert_eq!(header.height, 1);
-}
+let bitcoind_exe = electrsd::bitcoind::downloaded_exe_path().unwrap();
+let bitcoind = electrsd::bitcoind::BitcoinD::new(bitcoind_exe).unwrap();
+let electrs_exe = electrsd::downloaded_exe_path().unwrap();
+let electrsd = electrsd::ElectrsD::new(electrs_exe, &bitcoind).unwrap();
 ```
 
-When the `ELECTRSD_DOWNLOAD_ENDPOINT`/`BITCOIND_DOWNLOAD_ENDPOINT` environment variables are set,
-`electrsd`/`bitcoind` will try to download the binaries from the given endpoints.
+When the `ELECTRSD_DOWNLOAD_ENDPOINT` or `BITCOIND_DOWNLOAD_ENDPOINT`
+environment variable is set, the corresponding crate downloads from that
+endpoint instead.
 
 When you don't use the auto-download feature you have the following options:
 
@@ -50,51 +42,57 @@ When you don't use the auto-download feature you have the following options:
 - provide the `electrs` executable via the `ELECTRS_EXEC` env var
 
 ```rust
-use bitcoind::P2P;
-
-let mut conf = bitcoind::Conf::default();
-conf.p2p = P2P::Yes;
-let bitcoind = bitcoind::BitcoinD::with_conf(bitcoind::exe_path().unwrap(), &conf).unwrap();
-let electrsd = electrsd::ElectrsD::new(electrsd::exe_path().unwrap(), &bitcoind).unwrap();
+if let Ok(exe_path) = electrsd::exe_path() {
+  let electrsd = electrsd::ElectrsD::new(exe_path, &bitcoind).unwrap();
+}
 ```
 
-Startup options could be configured via the `Conf` struct using `electrsD::with_conf` or `electrsD::from_downloaded_with_conf`.
+Startup options can be configured via `Conf` and `ElectrsD::with_conf`.
 
 ## Nix
 
-For determinisim, in nix you cannot hit the internet within the `build.rs`. Moreover, some downstream crates cannot remove the auto-download feature from their dev-deps. In this case you can set the `ELECTRSD_SKIP_DOWNLOAD` env var and provide the electrs executable in the `PATH` (or skip the test execution).
+`default.nix` pins Nixpkgs and Blockstream electrs and exposes the
+`blockstream-electrs` package:
 
-## Issues with traditional approach
+```bash
+nix-build electrsd/default.nix -A blockstream-electrs
+./result/bin/electrs --version
+```
 
-I used integration testing based on external bash script launching needed external processes, there are many issues with this approach like:
+It also exposes `blockstream-electrs-zip`, the release asset that the `download`
+feature fetches, along with its `sha256` entry. The zip only depends on the
+binary, so it's identical wherever the binary builds identically:
 
-* External script may interfere with local development environment https://github.com/rust-bitcoin/rust-bitcoincore-rpc/blob/200fc8247c1896709a673b82a89ca0da5e7aa2ce/integration_test/run.sh#L9
-* Use of a single huge test to test everything https://github.com/rust-bitcoin/rust-bitcoincore-rpc/blob/200fc8247c1896709a673b82a89ca0da5e7aa2ce/integration_test/src/main.rs#L122-L203
-* If test are separated, a failing test may fail to leave a clean situation, causing other test to fail (because of the initial situation, not a real failure)
-* bash script are hard, especially support different OS and versions
+```bash
+nix-build electrsd/default.nix -A blockstream-electrs-zip
+cat ./result/sha256
+```
+
+The package supports `x86_64-linux` and `aarch64-darwin`. Linux uses the
+fully-static musl package set. The package also uses the platform allocator and
+bundled RocksDB, matching the production overrides used by Lexe.
+
+Nix builds cannot access the network from `build.rs`. Downstream Nix builds can
+set `ELECTRSD_SKIP_DOWNLOAD` and provide `electrs` through `ELECTRS_EXEC` or
+`PATH`.
 
 ## Features
 
-  * electrsd use a temporary directory as db dir
-  * A free port is asked to the OS (a very low probability race condition is still possible)
-  * The process is killed when the struct goes out of scope no matter how the test finishes
-  * Automatically download `electrs` executable with enabled features. Since there are no official binaries, they are built using the [manual workflow](.github/workflows/build_electrs.yml) under this project. Supported version are:
-    * [electrs 0.10.6](https://github.com/romanz/electrs/releases/tag/v0.10.6) (feature=electrs_0_10_6)
-    * [electrs 0.9.11](https://github.com/romanz/electrs/releases/tag/v0.9.11) (feature=electrs_0_9_11)
-    * [electrs 0.9.1](https://github.com/romanz/electrs/releases/tag/v0.9.1) (feature=electrs_0_9_1)
-    * [electrs 0.8.10](https://github.com/romanz/electrs/releases/tag/v0.8.10) (feature=electrs_0_8_10)
-    * [electrs esplora](https://github.com/Blockstream/electrs/tree/a33e97e1a1fc63fa9c20a116bb92579bbf43b254) (feature=esplora_a33e97e1)
+- Uses an isolated temporary index directory by default.
+- Asks the OS for free Electrum, Esplora, and monitoring ports.
+- Terminates the child process on drop, including when a test fails.
+- Tunes electrs for small regtest chains: light mode, one RPC and RocksDB
+  worker, one-block sync batches, and 1 MiB RocksDB cache/write buffers.
+- The `download` feature provides [Blockstream electrs at `ef15bf97`](https://github.com/Blockstream/electrs/tree/ef15bf97b97814bc8ac771e8537dcf1c1779dade)
+  and Bitcoin Core 32.1 through the `bitcoind` crate's `32_1` feature.
+- Electrs binaries are built from the pinned [Nix package](default.nix) by the
+  [manual workflow](../.github/workflows/build_blockstream_electrs.yml), which
+  uploads them to the `electrs_releases` GitHub release. Asset names end with a
+  prefix of the zip's SHA-256, so rebuilds never replace older binaries, and
+  `sha256` takes the `blockstream-electrs-zip` lines as-is.
 
-Thanks to these features every `#[test]` could easily run isolated with its own environment
+Each test can therefore run in its own isolated environment.
 
 ## Deprecations
 
 - Starting from version `0.26` the env var `ELECTRS_EXE` is deprecated in favor of `ELECTRS_EXEC`.
-
-
-## Used by
-
-  * [bdk](https://github.com/bitcoindevkit/bdk)
-  * [BEWallet](https://github.com/LeoComandini/BEWallet)
-  * [gdk rust](https://github.com/Blockstream/gdk/blob/master/subprojects/gdk_rust/)
-  * [lwk](https://github.com/Blockstream/lwk)
