@@ -20,11 +20,8 @@ PRs, feature requests, and bug reports against `corepc-types` most welcome and a
 PRs, feature requests, and bug reports against the other crates welcome if you are using them for
 integration testing.
 
-**Contributions should not be submitted directly by bots or as unchecked LLM output.** The usage of
-an LLM as part of the workflow is acceptable if the final code, commit messages and PR description
-are reviewed and corrected by the person responsible for the contribution before opening the PR. Any
-work that is substantially written by an LLM must be disclosed in the commit message or PR
-description.
+Please be considerate of reviewer time when using LLMs. We have the
+same AI tooling policy as LLVM: https://llvm.org/docs/AIToolPolicy.html
 
 **Please do not use `corepc-regtest-client` in production and raise bugs, issues, or feature requests.**
 
