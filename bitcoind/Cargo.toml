@@ -44,6 +44,7 @@ latest = ["31_1"]
 download = ["anyhow", "bitcoin_hashes", "bitreq"]
 
 # We support all minor releases of the latest three versions.
+32_1 = ["31_1"]
 31_1 = ["31_0"]
 31_0 = ["30_2"]
 30_2 = ["29_0"]
