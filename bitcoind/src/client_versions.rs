@@ -6,6 +6,7 @@
 
 #![allow(unused_imports)] // Not all users need the json types.
 
+// There are no v32 types yet, so `32_1` also uses the v31 client.
 #[cfg(feature = "31_0")]
 pub use corepc_regtest_client::{v31::*, types::v31 as vtype};
 
